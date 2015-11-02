@@ -1,7 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module THExpander
-    ( expand
+module Utils.THExpander
+    ( Env,
+      EnvType,
+      expand,
+      cabalEnv,
+      stackEnv,
+      plainEnv
     ) where
 
 import Prelude hiding (filter, any, reverse)
@@ -15,35 +20,47 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import qualified Data.Char as Chr
 import Data.Bool.Kleisli
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.Class (lift)
+import System.FilePath hiding ((<.>))
 
 data Env = Env {envType      :: EnvType,
 		ignoredFiles :: [FilePath],
 		ignoredDirs  :: [FilePath]}
 
-data EnvType = Stack | Cabal | Plain	
+data EnvType = Stack | Cabal | Plain deriving (Eq, Show)
+
+type THExpanderMonad a = ReaderT Env IO a
 
 cabalEnv = Env Cabal [] [".cabal-sandbox"]
 stackEnv = Env Stack [] [".stack-work"]
 plainEnv = Env Plain [] []
 
-expand :: FilePath -> IO ()
+expand :: FilePath -> THExpanderMonad ()
 expand d = do	
-	dir   <- getDirectory d
-	dir'  <- copyTo (d ++ "-expanded") dir
+	dir   <- lift . getDirectory $ d
+	dir'  <- lift . copyTo (d ++ "-expanded") $ dir
+	lift . putStrLn . show . flatten $ dir'
 	files <- filterM shouldBeExpanded $ flatten dir'
-	putStrLn $ "total files with templates: " ++ (show . length) files
-	mapM_ expandOne files	
-
-withoutExtension = reverse . tail . dropWhile (/= '.') . reverse
-extension        = reverse . takeWhile (/= '.') . reverse
+	lift . putStrLn $ "total files with templates: " ++ (show . length) files
+	eType <- envType <$> ask
+	lift . mapM_ (expandOne eType) $ files	
 
 dthFile :: FilePath -> FilePath
-dthFile f = withoutExtension f ++ ".th.hs"
+dthFile = (flip replaceExtension) "th.hs"
 
-expandOne :: FilePath -> IO ()
-expandOne f = do
+generateCompileString :: EnvType -> String
+generateCompileString t | t == Stack || t == Cabal = (env t) ++ " exec ghc " ++ " -- " ++ "-dth-dec-file -ddump-splices "
+			| t == Plain               = "ghc -dth-dec-file -ddump-splices "
+	where env Stack = "stack"
+	      env Cabal = "cabal"
+
+expandOne :: EnvType -> FilePath -> IO ()
+expandOne t f = do
 	putStrLn $ "expanding " ++ f ++ ".."
-	callCommand $ "stack exec ./ghcrunner.sh " ++ f
+	let cm =  generateCompileString t ++ f
+	putStrLn cm
+	callCommand $ cm
 	removeTH f
 	runCommand $ "cat " ++ dthFile f ++ " >> " ++ f
 	putStrLn "done"
@@ -75,8 +92,17 @@ removeSpliceOrExtension str | isLanguageString str = enclose "{-#" "#-}" . B.con
 			    | otherwise            = str	where
 	f c = (c == ',') || (c == ' ')
 
-shouldBeExpanded :: FilePath -> IO Bool
-shouldBeExpanded = allM [isFile,
-		        (kleisify $ (=="hs") . extension),
-			hasSplices]	
+shouldBeExpanded :: FilePath -> THExpanderMonad Bool
+shouldBeExpanded = allM [lift . (not <.> isDir),
+		        (kleisify $ (==".hs") . takeExtension),
+			notIgnored,
+			lift . hasSplices]	
 	
+notIgnored :: FilePath -> THExpanderMonad Bool
+notIgnored f = do
+	iDirs <- ignoredDirs <$> ask
+	iFiles <- ignoredFiles <$> ask	
+	let inIgnoredDir  = or . L.map (`isPrefixOf` f) $ iDirs
+	let isIgnoredFile = (flip elem) iFiles . takeFileName $ f
+	return $ not (inIgnoredDir || isIgnoredFile)
+

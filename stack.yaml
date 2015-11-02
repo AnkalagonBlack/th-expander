@@ -8,7 +8,7 @@ packages:
 - '.'
 - location:
     git: https://github.com/AnkalagonBlack/bool-kleisli.git
-    commit: 25a4a331faa93f81f5c45b0d2f0b807013438fe9
+    commit: 9b90a892f2ce947e86ed0edf7f26b7d49653336b
 
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
