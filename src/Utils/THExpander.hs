@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, TemplateHaskell #-}
 
 module Utils.THExpander
     ( Env,
@@ -6,7 +6,15 @@ module Utils.THExpander
       expand,
       cabalEnv,
       stackEnv,
-      plainEnv
+      plainEnv,
+      envType,
+      ignoredDirs,
+      ignoredFiles,
+      thModules,
+      (^.), --exporting some lens functions to be able to easily modify environments
+      (.~),
+      (%~),
+      module Utils.THExpander.Types
     ) where
 
 import Prelude hiding (filter, any, reverse)
@@ -23,18 +31,18 @@ import Data.Bool.Kleisli
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Class (lift)
 import System.FilePath hiding ((<.>))
+import Control.Lens.TH
+import Control.Lens ((^.), (.~), (%~))
+import Utils.THExpander.Types
 
-data Env = Env {envType      :: EnvType,
-		ignoredFiles :: [FilePath],
-		ignoredDirs  :: [FilePath]}
-
-data EnvType = Stack | Cabal | Plain deriving (Eq, Show)
 
 type THExpanderMonad a = ReaderT Env IO a
 
 cabalEnv = Env Cabal [] [".cabal-sandbox"]
 stackEnv = Env Stack [] [".stack-work"]
 plainEnv = Env Plain [] []
+
+$(makeLenses ''Env)
 
 expand :: FilePath -> THExpanderMonad ()
 expand d = do	
@@ -43,7 +51,7 @@ expand d = do
 	lift . putStrLn . show . flatten $ dir'
 	files <- filterM shouldBeExpanded $ flatten dir'
 	lift . putStrLn $ "total files with templates: " ++ (show . length) files
-	eType <- envType <$> ask
+	eType <- _envType <$> ask
 	lift . mapM_ (expandOne eType) $ files	
 
 dthFile :: FilePath -> FilePath
@@ -87,10 +95,15 @@ enclose str1 str2 str = str1 `C.append` str `C.append` str2
 
 --from line containing extensions info we should remove TemplateHaskell and from line which is splice we should remove everything
 removeSpliceOrExtension	:: B.ByteString -> B.ByteString
-removeSpliceOrExtension str | isLanguageString str = enclose "{-#" "#-}" . B.concat . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith f $ languageLineContent str
-			    | isSplice str         = "--there was TH splice."
+removeSpliceOrExtension str | isLanguageString str = enclose "{-#LANGUAGE " "#-}" . B.intercalate ", ". tail . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith f $ languageLineContent str
+			    | isSplice str         = "--there was some TH splice."			   			   
+			    | isTHImport str       = "--there was some TH import"
 			    | otherwise            = str	where
 	f c = (c == ',') || (c == ' ')
+
+isTHImport str = isImport && False where
+	isImport = (=="import") . head . C.words $ str
+
 
 shouldBeExpanded :: FilePath -> THExpanderMonad Bool
 shouldBeExpanded = allM [lift . (not <.> isDir),
@@ -100,8 +113,8 @@ shouldBeExpanded = allM [lift . (not <.> isDir),
 	
 notIgnored :: FilePath -> THExpanderMonad Bool
 notIgnored f = do
-	iDirs <- ignoredDirs <$> ask
-	iFiles <- ignoredFiles <$> ask	
+	iDirs <- _ignoredDirs <$> ask
+	iFiles <- _ignoredFiles <$> ask	
 	let inIgnoredDir  = or . L.map (`isPrefixOf` f) $ iDirs
 	let isIgnoredFile = (flip elem) iFiles . takeFileName $ f
 	return $ not (inIgnoredDir || isIgnoredFile)
