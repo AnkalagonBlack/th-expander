@@ -34,25 +34,28 @@ import System.FilePath hiding ((<.>))
 import Control.Lens.TH
 import Control.Lens ((^.), (.~), (%~))
 import Utils.THExpander.Types
+import Control.Monad.IO.Class
 
 
 type THExpanderMonad a = ReaderT Env IO a
 
-cabalEnv = Env Cabal [] [".cabal-sandbox"]
-stackEnv = Env Stack [] [".stack-work"]
-plainEnv = Env Plain [] []
+cabalEnv = Env Cabal [] [".cabal-sandbox"] []
+stackEnv = Env Stack [] [".stack-work"] []
+plainEnv = Env Plain [] [] []
 
 $(makeLenses ''Env)
 
-expand :: FilePath -> THExpanderMonad ()
-expand d = do	
+expand :: Env -> FilePath -> IO ()
+expand env f = runReaderT (expand' f) env
+
+expand' :: FilePath -> THExpanderMonad ()
+expand' d = do	
 	dir   <- lift . getDirectory $ d
 	dir'  <- lift . copyTo (d ++ "-expanded") $ dir
 	lift . putStrLn . show . flatten $ dir'
 	files <- filterM shouldBeExpanded $ flatten dir'
 	lift . putStrLn $ "total files with templates: " ++ (show . length) files
-	eType <- _envType <$> ask
-	lift . mapM_ (expandOne eType) $ files	
+	mapM_ expandOne $ files	
 
 dthFile :: FilePath -> FilePath
 dthFile = (flip replaceExtension) "th.hs"
@@ -63,15 +66,16 @@ generateCompileString t | t == Stack || t == Cabal = (env t) ++ " exec ghc " ++ 
 	where env Stack = "stack"
 	      env Cabal = "cabal"
 
-expandOne :: EnvType -> FilePath -> IO ()
-expandOne t f = do
-	putStrLn $ "expanding " ++ f ++ ".."
+expandOne :: FilePath -> THExpanderMonad ()
+expandOne f = do
+	t <- _envType <$> ask
+	liftIO $ (putStrLn $ "expanding " ++ f ++ "..")
 	let cm =  generateCompileString t ++ f
-	putStrLn cm
-	callCommand $ cm
+	liftIO $ putStrLn cm
+	liftIO $ callCommand $ cm
 	removeTH f
-	runCommand $ "cat " ++ dthFile f ++ " >> " ++ f
-	putStrLn "done"
+	liftIO $ runCommand $ "cat " ++ dthFile f ++ " >> " ++ f
+	liftIO $ putStrLn "done"
 
 isSplice = B.isPrefixOf "$"
 
@@ -81,10 +85,11 @@ hasSplices f = do
 	let ls = C.split '\n' content	
 	return $ any isSplice ls
 
-removeTH :: FilePath -> IO ()
+removeTH :: FilePath -> THExpanderMonad ()
 removeTH f = do
-	content <- B.readFile f
-	B.writeFile f . C.unlines . L.map removeSpliceOrExtension . C.split '\n' $ content 	
+	content <- liftIO $ B.readFile f
+	thMods  <- _thModules <$> ask
+	liftIO $ B.writeFile f . C.unlines . L.map (removeSpliceOrExtension thMods) . C.split '\n' $ content 	
 
 isLanguageString :: B.ByteString -> Bool
 isLanguageString  = B.isPrefixOf "{-#"
@@ -94,15 +99,24 @@ languageLineContent = C.pack . L.reverse . L.dropWhile (not . Chr.isAlpha) . L.r
 enclose str1 str2 str = str1 `C.append` str `C.append` str2
 
 --from line containing extensions info we should remove TemplateHaskell and from line which is splice we should remove everything
-removeSpliceOrExtension	:: B.ByteString -> B.ByteString
-removeSpliceOrExtension str | isLanguageString str = enclose "{-#LANGUAGE " "#-}" . B.intercalate ", ". tail . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith f $ languageLineContent str
-			    | isSplice str         = "--there was some TH splice."			   			   
-			    | isTHImport str       = "--there was some TH import"
-			    | otherwise            = str	where
-	f c = (c == ',') || (c == ' ')
+removeSpliceOrExtension	:: [String] -> B.ByteString -> B.ByteString
+removeSpliceOrExtension mods str | isLanguageString str      = processLanguagePragma str
+			         | isSplice str              = "--there was some TH splice."			   			   
+			         | isTHImport mods str       = "--there was some TH import"
+			         | otherwise                 = str
 
-isTHImport str = isImport && False where
-	isImport = (=="import") . head . C.words $ str
+processLanguagePragma str = ifNotEmpty (enclose "{-#LANGUAGE " "#-}") . B.intercalate ", ". tail . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith p $ languageLineContent str where
+	p c = (c == ',') || (c == ' ')
+	ifNotEmpty f "" = ""
+	ifNotEmpty f s  = f s 
+
+
+isTHImport mods str = notEmpty && isImport && isTHModule where
+	notEmpty   = not . C.null $ str
+	isImport   = (=="import") . head . C.words $ str
+	isTHModule = elem modul $ L.map C.pack mods
+	modul      = head . L.filter notKeyWord . C.words $ str
+	notKeyWord = and . (<*>) [(/="qualified"), (/="import")] . pure
 
 
 shouldBeExpanded :: FilePath -> THExpanderMonad Bool
