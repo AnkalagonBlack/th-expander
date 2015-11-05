@@ -4,6 +4,7 @@ module Utils.THExpander
     ( Env,
       EnvType,
       expand,
+      expandToDefault,
       cabalEnv,
       stackEnv,
       plainEnv,
@@ -13,7 +14,8 @@ module Utils.THExpander
       thModules,
       (^.), --exporting some lens functions to be able to easily modify environments
       (.~),
-      (%~),
+      (%~),      
+      removePrefix,
       module Utils.THExpander.Types
     ) where
 
@@ -35,25 +37,32 @@ import Control.Lens.TH
 import Control.Lens ((^.), (.~), (%~))
 import Utils.THExpander.Types
 import Control.Monad.IO.Class
+import Control.Applicative (liftA)
 
 
 type THExpanderMonad a = ReaderT Env IO a
 
-cabalEnv = Env Cabal [] [".cabal-sandbox"] []
-stackEnv = Env Stack [] [".stack-work"] []
-plainEnv = Env Plain [] [] []
+cabalEnv = Env Cabal [] [".cabal-sandbox"] [] "" ""
+stackEnv = Env Stack [] [".stack-work"]    [] "" "" 
+plainEnv = Env Plain [] []                 [] "" ""
 
 $(makeLenses ''Env)
 
-expand :: Env -> FilePath -> IO ()
-expand env f = runReaderT (expand' f) env
+expandToDefault :: Env -> FilePath -> IO ()
+expandToDefault env src = expand env src (src ++ "-expanded")
 
-expand' :: FilePath -> THExpanderMonad ()
-expand' d = do	
-	dir   <- lift . getDirectory $ d
-	dir'  <- lift . copyTo (d ++ "-expanded") $ dir
-	lift . putStrLn . show . flatten $ dir'
-	files <- filterM shouldBeExpanded $ flatten dir'
+expand :: Env -> FilePath -> FilePath -> IO ()
+expand env src target = runReaderT expand' $ env' where
+	env' = (.~) expandTo target ((.~) dirToExpand src env)
+
+expand' :: THExpanderMonad ()
+expand' = do
+	src    <- _dirToExpand <$> ask
+	target <- _expandTo    <$> ask
+	dir    <- lift . getDirectory $ src
+	dir'   <- lift . copyTo target $ dir
+	--lift . putStrLn . show . flatten $ dir'
+	files  <- filterM shouldBeExpanded $ flatten dir'
 	lift . putStrLn $ "total files with templates: " ++ (show . length) files
 	mapM_ expandOne $ files	
 
@@ -126,10 +135,17 @@ shouldBeExpanded = allM [lift . (not <.> isDir),
 			lift . hasSplices]	
 	
 notIgnored :: FilePath -> THExpanderMonad Bool
-notIgnored f = do
-	iDirs <- _ignoredDirs <$> ask
-	iFiles <- _ignoredFiles <$> ask	
-	let inIgnoredDir  = or . L.map (`isPrefixOf` f) $ iDirs
+notIgnored f = do	
+	target <- _expandTo     <$> ask
+	iDirs  <- _ignoredDirs  <$> ask
+	iFiles <- _ignoredFiles <$> ask
+	let inIgnoredDir  = or . L.map (flip isPrefixOf $ removePrefix (target ++ [pathSeparator]) f) $ iDirs
 	let isIgnoredFile = (flip elem) iFiles . takeFileName $ f
-	return $ not (inIgnoredDir || isIgnoredFile)
+	liftIO $ putStrLn . show $ inIgnoredDir
+	return $ not (inIgnoredDir || isIgnoredFile) where 
+
+removePrefix [] str = str
+removePrefix _ []   = []
+removePrefix (p:ps) str@(s:ss) | p == s = removePrefix ps ss
+			       | otherwise = str
 
