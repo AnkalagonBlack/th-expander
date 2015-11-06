@@ -5,9 +5,6 @@ module Utils.THExpander
       EnvType,
       expand,
       expandToDefault,
-      cabalEnv,
-      stackEnv,
-      plainEnv,
       envType,
       ignoredDirs,
       ignoredFiles,
@@ -15,12 +12,14 @@ module Utils.THExpander
       (^.), --exporting some lens functions to be able to easily modify environments
       (.~),
       (%~),      
-      module Utils.THExpander.Types
+      module Utils.THExpander.Types,
+      module Utils.THExpander.Envs
     ) where
 
 import Prelude hiding (filter, any, reverse)
 import System.Process
 import System.File.Tree hiding (mapM_, filterM)
+import qualified System.File.Tree as S (filterM)
 import Data.Foldable  (toList)
 import Control.Monad  (filterM)
 import Data.List as L
@@ -34,16 +33,14 @@ import Control.Monad.Trans.Class (lift)
 import System.FilePath hiding ((<.>))
 import Control.Lens.TH
 import Control.Lens ((^.), (.~), (%~))
-import Utils.THExpander.Types
 import Control.Monad.IO.Class
 import Control.Applicative (liftA)
+import Data.Tree (drawTree)
 
+import Utils.THExpander.Types
+import Utils.THExpander.Envs
 
 type THExpanderMonad a = ReaderT Env IO a
-
-cabalEnv = Env Cabal [] [".cabal-sandbox"] [] "" ""
-stackEnv = Env Stack [] [".stack-work"]    [] "" "" 
-plainEnv = Env Plain [] []                 [] "" ""
 
 $(makeLenses ''Env)
 
@@ -52,14 +49,16 @@ expandToDefault env src = expand env src (src ++ "-expanded")
 
 expand :: Env -> FilePath -> FilePath -> IO ()
 expand env src target = runReaderT expand' $ env' where
-	env' = (%~) ignoredDirs (++[target]) ((.~) expandTo target ((.~) dirToExpand src env))
+	env' = (%~) dirsNotToCopy (++[target]) ((.~) expandTo target ((.~) dirToExpand src env))
+
 
 expand' :: THExpanderMonad ()
 expand' = do
 	src    <- _dirToExpand <$> ask
 	target <- _expandTo    <$> ask
-	dir    <- lift . getDirectory $ src	
-	dir'   <- lift . copyTo target $ dir		
+	dir    <- lift . getDirectory $ src
+	nc     <- S.filterM notCopy [dir]
+	dir'   <- lift . copyTo target . head $ nc
 	files  <- filterM shouldBeExpanded $ flatten dir'	
 	lift . putStrLn $ "files with templates: " ++ (show files)
 	mapM_ expandOne $ files	
@@ -72,6 +71,8 @@ generateCompileString t | t == Stack || t == Cabal = (env t) ++ " exec ghc " ++ 
 			| t == Plain               = "ghc -dth-dec-file -ddump-splices "
 	where env Stack = "stack"
 	      env Cabal = "cabal"
+
+
 
 expandOne :: FilePath -> THExpanderMonad ()
 expandOne f = do
@@ -131,7 +132,13 @@ shouldBeExpanded = allM [lift . (not <.> isDir),
 		        (kleisify $ (==".hs") . takeExtension),
 			notIgnored,
 			lift . hasSplices]	
-	
+notCopy :: FilePath -> THExpanderMonad Bool
+notCopy f = do 
+	nDirs  <- _dirsNotToCopy  <$> ask
+	src    <- _dirToExpand    <$> ask
+	let nDirs' = L.map ((src++[pathSeparator])++) nDirs
+	return $ not . or . L.map (flip isPrefixOf $ f) $ nDirs'
+ 
 notIgnored :: FilePath -> THExpanderMonad Bool
 notIgnored f = do	
 	target <- _expandTo     <$> ask
@@ -139,7 +146,6 @@ notIgnored f = do
 	iFiles <- _ignoredFiles <$> ask
 	let inIgnoredDir  = or . L.map (flip isPrefixOf $ removePrefix (target ++ [pathSeparator]) f) $ iDirs
 	let isIgnoredFile = (flip elem) iFiles . takeFileName $ f
-	liftIO $ putStrLn . show $ inIgnoredDir
 	return $ not (inIgnoredDir || isIgnoredFile)
 
 removePrefix [] str = str

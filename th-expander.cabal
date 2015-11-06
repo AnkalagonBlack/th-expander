@@ -15,8 +15,8 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Utils.THExpander
-  build-depends:       base >= 4.7 && < 5, filesystem-trees, process, lens, split, bytestring, bool-kleisli, transformers, filepath
+  exposed-modules:     Utils.THExpander, Utils.THExpander.Envs, Utils.THExpander.Types
+  build-depends:       base >= 4.7 && < 5, filesystem-trees, process, lens, split, bytestring, bool-kleisli, transformers, filepath, containers
   default-language:    Haskell2010
 
 
