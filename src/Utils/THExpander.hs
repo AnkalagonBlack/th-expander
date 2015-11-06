@@ -15,7 +15,6 @@ module Utils.THExpander
       (^.), --exporting some lens functions to be able to easily modify environments
       (.~),
       (%~),      
-      removePrefix,
       module Utils.THExpander.Types
     ) where
 
@@ -53,17 +52,16 @@ expandToDefault env src = expand env src (src ++ "-expanded")
 
 expand :: Env -> FilePath -> FilePath -> IO ()
 expand env src target = runReaderT expand' $ env' where
-	env' = (.~) expandTo target ((.~) dirToExpand src env)
+	env' = (%~) ignoredDirs (++[target]) ((.~) expandTo target ((.~) dirToExpand src env))
 
 expand' :: THExpanderMonad ()
 expand' = do
 	src    <- _dirToExpand <$> ask
 	target <- _expandTo    <$> ask
-	dir    <- lift . getDirectory $ src
-	dir'   <- lift . copyTo target $ dir
-	--lift . putStrLn . show . flatten $ dir'
-	files  <- filterM shouldBeExpanded $ flatten dir'
-	lift . putStrLn $ "total files with templates: " ++ (show . length) files
+	dir    <- lift . getDirectory $ src	
+	dir'   <- lift . copyTo target $ dir		
+	files  <- filterM shouldBeExpanded $ flatten dir'	
+	lift . putStrLn $ "files with templates: " ++ (show files)
 	mapM_ expandOne $ files	
 
 dthFile :: FilePath -> FilePath
@@ -114,14 +112,14 @@ removeSpliceOrExtension mods str | isLanguageString str      = processLanguagePr
 			         | isTHImport mods str       = "--there was some TH import"
 			         | otherwise                 = str
 
-processLanguagePragma str = ifNotEmpty (enclose "{-#LANGUAGE " "#-}") . B.intercalate ", ". tail . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith p $ languageLineContent str where
+processLanguagePragma str = ifNotEmpty (enclose "{-#LANGUAGE " "#-}") . C.intercalate "," . L.filter (not . C.null) . tail . L.filter (not . B.isInfixOf "TemplateHaskell") . C.splitWith p $ languageLineContent str where
 	p c = (c == ',') || (c == ' ')
 	ifNotEmpty f "" = ""
 	ifNotEmpty f s  = f s 
 
 
-isTHImport mods str = notEmpty && isImport && isTHModule where
-	notEmpty   = not . C.null $ str
+isTHImport mods str = (notEmpty && isImport) && isTHModule where
+        notEmpty   = not . null . C.words $ str
 	isImport   = (=="import") . head . C.words $ str
 	isTHModule = elem modul $ L.map C.pack mods
 	modul      = head . L.filter notKeyWord . C.words $ str
@@ -142,7 +140,7 @@ notIgnored f = do
 	let inIgnoredDir  = or . L.map (flip isPrefixOf $ removePrefix (target ++ [pathSeparator]) f) $ iDirs
 	let isIgnoredFile = (flip elem) iFiles . takeFileName $ f
 	liftIO $ putStrLn . show $ inIgnoredDir
-	return $ not (inIgnoredDir || isIgnoredFile) where 
+	return $ not (inIgnoredDir || isIgnoredFile)
 
 removePrefix [] str = str
 removePrefix _ []   = []
