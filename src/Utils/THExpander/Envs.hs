@@ -6,6 +6,11 @@ module Utils.THExpander.Envs (
 
 import Utils.THExpander.Types
 
+standardQualifyAs = [("GHC.Base.", ""),
+                     ("GHC.Types.", ""),
+                     ("Data.Tuple.", ""),
+                     ("GHC.IORef.", "")]
+
 cabalEnv = Env {
 	_envType       = Cabal,
 	_ignoredFiles  =  [],
@@ -13,7 +18,8 @@ cabalEnv = Env {
 	_dirsNotToCopy =  ["build", "dist"],
 	_thModules     =  [],
 	_dirToExpand   =  "",
-	_expandTo      =  ""}
+	_expandTo      =  "",
+    _qualifyAs     =  standardQualifyAs}
 
 stackEnv = Env {
 	_envType       = Stack,
@@ -22,7 +28,8 @@ stackEnv = Env {
 	_dirsNotToCopy =  ["build", "dist"],
 	_thModules     =  [],
 	_dirToExpand   =  "",
-	_expandTo      =  ""}
+	_expandTo      =  "",
+    _qualifyAs     = standardQualifyAs}
 
 plainEnv = Env {
 	_envType       = Plain,
@@ -31,5 +38,6 @@ plainEnv = Env {
 	_dirsNotToCopy =  [],
 	_thModules     =  [],
 	_dirToExpand   =  "",
-	_expandTo      =  ""}
+	_expandTo      =  "",
+    _qualifyAs     = standardQualifyAs}
 
